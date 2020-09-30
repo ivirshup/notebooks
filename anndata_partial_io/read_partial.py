@@ -13,12 +13,13 @@ from anndata._core.merge import (
 )
 from anndata._core.index import _normalize_indices
 from anndata._io.h5ad import read_attribute, read_dataframe, read_dataset
-from anndata._core.sparse_dataset import  SparseDataset
+from anndata._core.sparse_dataset import SparseDataset
 
 
 def read_elem_subset(packed):
     group, keys = packed
     return {key: read_attribute(group[key]) for key in keys}
+
 
 # def read_partial(
 #     pth: PathLike,
@@ -50,7 +51,8 @@ def read_elem_subset(packed):
 
 ###### V2
 
-class H5Translator():
+
+class H5Translator:
     pass
 
 
@@ -76,6 +78,7 @@ class CSRSparse(H5Translator):
     def read_partial(elem, *, items=None, indices=(slice(None), slice(None))):
         return SparseDataset(elem)[indices]
 
+
 class CSCSparse(H5Translator):
     encoding_version = "0.1.0"
     encoding_type = "csc_matrix"
@@ -86,6 +89,7 @@ class CSCSparse(H5Translator):
     def read_partial(elem, *, items=None, indices=(slice(None), slice(None))):
         return SparseDataset(elem)[indices]
 
+
 class DataFrame(H5Translator):
     encoding_version = "0.1.0"
     encoding_type = "dataframe"
@@ -94,8 +98,8 @@ class DataFrame(H5Translator):
         columns = list(elem.attrs["column-order"])
         idx_key = elem.attrs["_index"]
         df = pd.DataFrame(
-            {k: find_translator(group[k]).read(group[k]) for k in columns},
-            index=find_translator(group[idx_key]).read(group[idx_key]),
+            {k: find_translator(elem[k]).read(elem[k]) for k in columns},
+            index=find_translator(elem[idx_key]).read(elem[idx_key]),
             columns=list(columns),
         )
         if idx_key != "_index":
@@ -129,8 +133,10 @@ class Basic(H5Translator):
         else:
             return elem[()]
 
+
 def read(group):
     return {k: find_translator(v).read(v) for k, v in group.items()}
+
 
 def _read_partial(group, *, items=None, indices=(slice(None), slice(None))):
     if group is None:
@@ -146,18 +152,17 @@ def _read_partial(group, *, items=None, indices=(slice(None), slice(None))):
         else:
             next_items = None
         result[k] = find_translator(group[k]).read_partial(
-            group[k], items =next_items, indices=indices
+            group[k], items=next_items, indices=indices
         )
     return result
 
-# def read_h5ad_partial(group, *, items, indices)
 
 def read_partial(
     pth: PathLike,
     *,
     obs_idx=slice(None),
     var_idx=slice(None),
-    X = True,
+    X=True,
     obs=None,
     var=None,
     obsm=None,
@@ -170,20 +175,40 @@ def read_partial(
     result = {}
     with h5py.File(pth, "r") as f:
         obs_idx, var_idx = _normalize_indices((obs_idx, var_idx), *read_indices(f))
-        result["obs"] = find_translator(f["obs"]).read_partial(f["obs"], items=obs, indices=(obs_idx, slice(None)))
-        result["var"] = find_translator(f["var"]).read_partial(f["var"], items=var, indices=(var_idx, slice(None)))
+        result["obs"] = find_translator(f["obs"]).read_partial(
+            f["obs"], items=obs, indices=(obs_idx, slice(None))
+        )
+        result["var"] = find_translator(f["var"]).read_partial(
+            f["var"], items=var, indices=(var_idx, slice(None))
+        )
         if X:
-            result["X"] = find_translator(f["X"]).read_partial(f["X"], indices=(obs_idx, var_idx))
+            result["X"] = find_translator(f["X"]).read_partial(
+                f["X"], indices=(obs_idx, var_idx)
+            )
         else:
             result["X"] = sparse.csr_matrix((len(result["obs"]), len(result["var"])))
-        result["obsm"] = _read_partial(f.get("obsm", None), items=obsm, indices=(obs_idx, slice(None)))
-        result["varm"] = _read_partial(f.get("varm", None), items=varm, indices=(var_idx, slice(None)))
-        result["obsp"] = _read_partial(f.get("obsp", None), items=obsp, indices=(obs_idx, obs_idx))
-        result["varp"] = _read_partial(f.get("varp", None), items=varp, indices=(var_idx, var_idx))
-        result["layers"] = _read_partial(f.get("layers", None), items=layers, indices=(obs_idx, var_idx))
-        result["uns"] = _read_partial(f.get("uns", None), items=uns,)
+        result["obsm"] = _read_partial(
+            f.get("obsm", None), items=obsm, indices=(obs_idx, slice(None))
+        )
+        result["varm"] = _read_partial(
+            f.get("varm", None), items=varm, indices=(var_idx, slice(None))
+        )
+        result["obsp"] = _read_partial(
+            f.get("obsp", None), items=obsp, indices=(obs_idx, obs_idx)
+        )
+        result["varp"] = _read_partial(
+            f.get("varp", None), items=varp, indices=(var_idx, var_idx)
+        )
+        result["layers"] = _read_partial(
+            f.get("layers", None), items=layers, indices=(obs_idx, var_idx)
+        )
+        result["uns"] = _read_partial(
+            f.get("uns", None),
+            items=uns,
+        )
 
     return ad.AnnData(**result)
+
 
 def read_indices(group):
     obs_group = group["obs"]
@@ -194,13 +219,6 @@ def read_indices(group):
     var_idx = find_translator(var_idx_elem).read(var_idx_elem)
     return obs_idx, var_idx
 
-# read_partial()
-#     _read_partial()
-
-#     schema = {k: v for k, v in elems.items() if v is not None}
-#     with h5py.File(pth, "r") as f:
-#         result = merge_nested((f, schema), intersect_keys, read_elem_subset)
-#     return result
 
 def find_translator(item):
     enc_version = item.attrs.get("encoding-version", "")
@@ -208,7 +226,6 @@ def find_translator(item):
 
     translators = H5Translator.__subclasses__()
     for t in translators:
-        if (enc_type == t.encoding_type and enc_version == t.encoding_version):
+        if enc_type == t.encoding_type and enc_version == t.encoding_version:
             return t
     raise NotImplementedError()
-
