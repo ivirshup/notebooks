@@ -1,4 +1,6 @@
 from os import PathLike
+from collections.abc import Mapping
+from functools import singledispatch
 
 import h5py
 from scipy import sparse
@@ -12,6 +14,7 @@ from anndata._core.merge import (
 from anndata._core.index import _normalize_indices
 from anndata._io.h5ad import read_attribute, read_dataframe, read_dataset
 from anndata._core.sparse_dataset import  SparseDataset
+
 
 def read_elem_subset(packed):
     group, keys = packed
@@ -88,10 +91,23 @@ class DataFrame(H5Translator):
     encoding_type = "dataframe"
 
     def read(elem):
-        return read_dataframe(elem)
+        columns = list(elem.attrs["column-order"])
+        idx_key = elem.attrs["_index"]
+        df = pd.DataFrame(
+            {k: find_translator(group[k]).read(group[k]) for k in columns},
+            index=find_translator(group[idx_key]).read(group[idx_key]),
+            columns=list(columns),
+        )
+        if idx_key != "_index":
+            df.index.name = idx_key
+        return df
 
     # TODO
     def read_partial(elem, *, items=None, indices=(slice(None), slice(None))):
+        if items is None:
+            items = slice(None)
+        else:
+            items = list(items)
         return read_dataframe(elem)[items].iloc[indices[0]]
 
 
@@ -107,7 +123,11 @@ class Basic(H5Translator):
 
     def read_partial(elem, *, items=None, indices=(slice(None), slice(None))):
         if isinstance(elem, Mapping):
-            return _read_partial(elem, item=items, indices=indices)
+            return _read_partial(elem, items=items, indices=indices)
+        elif indices != (slice(None), slice(None)):
+            return elem[indices]
+        else:
+            return elem[()]
 
 def read(group):
     return {k: find_translator(v).read(v) for k, v in group.items()}
@@ -115,7 +135,10 @@ def read(group):
 def _read_partial(group, *, items=None, indices=(slice(None), slice(None))):
     if group is None:
         return None
-    keys = intersect_keys((group, items))
+    if items is None:
+        keys = intersect_keys((group,))
+    else:
+        keys = intersect_keys((group, items))
     result = {}
     for k in keys:
         if isinstance(items, Mapping):
@@ -134,21 +157,21 @@ def read_partial(
     *,
     obs_idx=slice(None),
     var_idx=slice(None),
-    X = False,
-    obs=(),
-    var=(),
-    obsm=(),
-    varm=(),
-    obsp=(),
-    varp=(),
-    layers=(),
-    uns=(),
+    X = True,
+    obs=None,
+    var=None,
+    obsm=None,
+    varm=None,
+    obsp=None,
+    varp=None,
+    layers=None,
+    uns=None,
 ) -> ad.AnnData:
     result = {}
     with h5py.File(pth, "r") as f:
         obs_idx, var_idx = _normalize_indices((obs_idx, var_idx), *read_indices(f))
-        result["obs"] = find_translator(f["obs"]).read_partial(f["obs"], items=list(obs), indices=(obs_idx, slice(None)))
-        result["var"] = find_translator(f["var"]).read_partial(f["var"], items=list(var), indices=(var_idx, slice(None)))
+        result["obs"] = find_translator(f["obs"]).read_partial(f["obs"], items=obs, indices=(obs_idx, slice(None)))
+        result["var"] = find_translator(f["var"]).read_partial(f["var"], items=var, indices=(var_idx, slice(None)))
         if X:
             result["X"] = find_translator(f["X"]).read_partial(f["X"], indices=(obs_idx, var_idx))
         else:
@@ -159,6 +182,7 @@ def read_partial(
         result["varp"] = _read_partial(f.get("varp", None), items=varp, indices=(var_idx, var_idx))
         result["layers"] = _read_partial(f.get("layers", None), items=layers, indices=(obs_idx, var_idx))
         result["uns"] = _read_partial(f.get("uns", None), items=uns,)
+
     return ad.AnnData(**result)
 
 def read_indices(group):
