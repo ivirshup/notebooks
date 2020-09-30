@@ -14,6 +14,7 @@ from anndata._core.sparse_dataset import SparseDataset
 from anndata._io.h5ad import read_dataset
 
 
+# TODO: This probably should be replaced by a hashable Mapping due to conversion b/w "_" and "-"
 class IOSchema(NamedTuple):
     encoding_type: str
     encoding_version: str
@@ -24,10 +25,14 @@ class IORegistry(object):
         self.read = {}
         self.read_partial = {}
         self.write = {}
+        self.write_schema = {}
 
-    def register_write(self, schema):
+    # TODO: Make this add schema fields to `attrs`
+    # This might actually be more complicated, since I want to dispatch writing on types
+    def register_write(self, type, schema):
         def _register(func):
-            self.write[proc_schema(schema)] = func
+            self.write_schema[type] = proc_schema(schema)
+            self.write[type] = func
             return func
 
         return _register
@@ -141,7 +146,7 @@ def read_basic(elem):
     if isinstance(elem, Mapping):
         return {k: read_elem(v) for k, v in elem.items()}
     elif isinstance(elem, h5py.Dataset):
-        return h5ad.read_dataset(elem)
+        return h5ad.read_dataset(elem)  # TODO: Handle legacy
 
 
 @_REGISTRY.register_read_partial({"encoding-type": "", "encoding-version": ""})
