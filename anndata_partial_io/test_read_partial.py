@@ -1,8 +1,10 @@
+import numpy as np
 from pathlib import Path
 import sys
 
 sys.path.append(str(Path(__file__).parent))
 
+import anndata as ad
 from anndata.tests.helpers import gen_adata, assert_equal
 import scanpy as sc
 from read_partial import read_partial
@@ -41,3 +43,30 @@ def test_read_partial_registry(tmpdir):
     test._remove_unused_categories(test.obs, test.obs, test.uns)  # TODO: Unused categories currently not removed
 
     assert_equal(truth, test)
+
+
+def test_read(tmpdir):
+    from read_partial_registry import read
+    pth = tmpdir / "test.h5ad"
+
+    orig = gen_adata((10, 20))
+    orig.write(pth, compression="lzf")
+
+    truth = ad.read_h5ad(pth)
+    test = read(pth)
+
+    assert_equal(truth, test)
+    assert_equal(orig, test)
+
+
+def test_read_write(tmpdir):
+    from read_partial_registry import read, write
+    pth = tmpdir / "test.h5ad"
+
+    orig = gen_adata((10, 20))
+    orig.uns["scalars"] = {"str": "abced", "int": 1, "float": 1., "bool": True, "int32": np.int32(1)}
+
+    write(orig, pth)
+    from_disk = read(pth)
+
+    assert_equal(orig, from_disk)
