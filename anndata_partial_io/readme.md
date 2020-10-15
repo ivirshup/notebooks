@@ -36,5 +36,18 @@ _REGISTRY.read[key](elem)
 * The most important thing is that there's a stable API where all this information is passed
 * How do I handle other read/ write time modifications? E.g. read dense as sparse, write sparse as dense
     * Optional/ required modifiers as frozen sets?
+    * _REGISTRY.get_reader(key, modifiers)(elem)
     * It would probably be useful to come up with other read/ write time modifications to illustrate the point.
         * "read as delayed"? Or does that warant it's own set of functions?
+* How do I handle element types for arrays? `array.dtype`?
+
+
+## Partial reads for sparse datasets
+
+* I have this mostly working. However there is a question of whether I should use my own approach for cached access to arrays.
+    * In the next version of h5py, there should be a faster way to access datasets available [https://github.com/h5py/h5py/pull/1428]()
+        * There is a release candidate out now, that release candidate is much faster than using a python based cache.
+    * In the next version of zarr, there should be a decompressed chunk store which should be equivalent [https://github.com/zarr-developers/zarr-python/issues/278]()
+* However, it does look like we get a pretty good immediate speed up, so maybe we should just go with this?
+* With good performance on the cache hits, I start running into the problem that now having the loop in python is slow.
+    * Most of it could be moved to numba, but there is still need to sometimes read a chunk of the dataset. How should this be handled?
