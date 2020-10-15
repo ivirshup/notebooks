@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from os import PathLike
 from collections import Mapping
 from functools import singledispatch, partial, wraps
@@ -27,7 +29,8 @@ class IOSpec(NamedTuple):
 
 
 def write_spec(spec: IOSpec):
-    def decorator(func):
+    def decorator(func: Callable):
+        @wraps(func)
         def wrapper(g, k, *args, **kwargs):
             result = func(g, k, *args, **kwargs)
             g[k].attrs["encoding-type"] = spec.encoding_type
@@ -44,54 +47,68 @@ class IORegistry(object):
         self.read: typing.Mapping[IOSpec, Callable] = {}
         self.read_partial: typing.Mapping[IOSpec, Callable] = {}
         self.write: typing.Mapping[Union[Type, Tuple[Type, str]], Callable] = {}
-        self.write_schema: typing.Mapping[typing.Type, IOSpec] = {}
 
-    # TODO: Make this add schema fields to `attrs`
-    # This might actually be more complicated, since I want to dispatch writing on types
-    def register_write(self, type, schema):
+
+    def register_write(self, typ: Union[type, tuple[type, np.dtype]], spec, modifiers: frozenset(str) = frozenset()):
+        spec = proc_spec(spec)
+        modifiers = frozenset(modifiers)
         def _register(func):
-            spec = proc_schema(schema)
-            self.write_schema[type] = spec
-            self.write[type] = write_spec(spec)(func)
+            self.write[(typ, modifiers)] = write_spec(spec)(func)
             return func
 
         return _register
 
-    def register_read(self, schema):
+    def get_writer(self, typ, modifiers=frozenset()):
+        modifiers = frozenset(modifiers)
+        return self.write[(typ, modifiers)]
+
+    def register_read(self, spec, modifiers: frozenset[str] = frozenset()):
+        spec = proc_spec(spec)
+        modifiers = frozenset(modifiers)
         def _register(func):
-            self.read[proc_schema(schema)] = func
+            self.read[(spec, modifiers)] = func
             return func
 
         return _register
 
-    def register_read_partial(self, schema):
+    def get_reader(self, spec, modifiers=frozenset()):
+        modifiers = frozenset(modifiers)
+        return self.read[(spec, modifiers)]
+
+    def register_read_partial(self, spec, modifiers: frozenset[str] = frozenset()):
+        spec = proc_spec(spec)
+        modifiers = frozenset(modifiers)
         def _register(func):
-            self.read_partial[proc_schema(schema)] = func
+            self.read_partial[(spec, modifiers)] = func
             return func
 
         return _register
+
+    def get_partial_reader(self, spec, modifiers=frozenset()):
+        modifiers = frozenset(modifiers)
+        return self.read_partial[(spec, modifiers)]
 
 
 _REGISTRY = IORegistry()
 
 
 @singledispatch
-def proc_schema(schema):
-    raise NotImplementedError(f"proc_schema not defined for type: {type(schema)}.")
+def proc_spec(spec) -> IOSpec:
+    raise NotImplementedError(f"proc_spec not defined for type: {type(spec)}.")
 
 
-@proc_schema.register(IOSpec)
-def proc_schema_schema(schema) -> IOSpec:
-    return schema
+@proc_spec.register(IOSpec)
+def proc_spec_spec(spec) -> IOSpec:
+    return spec
 
 
-@proc_schema.register(Mapping)
-def proc_schema_mapping(schema) -> IOSpec:
-    return IOSpec(**{k.replace("-", "_"): v for k, v in schema.items()})
+@proc_spec.register(Mapping)
+def proc_spec_mapping(spec) -> IOSpec:
+    return IOSpec(**{k.replace("-", "_"): v for k, v in spec.items()})
 
 
-def get_schema(elem: Union[h5py.Dataset, h5py.Group]) -> IOSpec:
-    return proc_schema(
+def get_spec(elem: Union[h5py.Dataset, h5py.Group]) -> IOSpec:
+    return proc_spec(
         {k: elem.attrs.get(k, "") for k in ["encoding-type", "encoding-version"]}
     )
 
@@ -100,24 +117,44 @@ def get_schema(elem: Union[h5py.Dataset, h5py.Group]) -> IOSpec:
 # Dispatch methods #
 ####################
 
+# def is_full_slice(idx):
+#     if isinstance(idx, tuple)len(idx) == 1:
 
-def read_elem(elem):
+#     if isinstance(idx, type(None)):
+#         return True
+#     elif idx is Ellipsis:
+#         return True
+#     elif isinstance(idx, tuple):
+#         for el in idx:
+#             if isinstance(el, type(None)):
+#                 pass
+#             elif isinstance(el, slice):
+#                 if el != slice(None):
+#                     return False
+#             else:
+#                 return False
+#         return True
+#     return False
+
+
+def read_elem(elem, modifiers: frozenset(str) = frozenset()):
     """Read an element from an on disk store."""
-    return _REGISTRY.read[get_schema(elem)](elem)
+    return _REGISTRY.get_reader(get_spec(elem), frozenset(modifiers))(elem)
 
 
-def read_elem_partial(elem, *, items=None, indices=(slice(None), slice(None))):
+# TODO: If all items would be read, just call normal read method
+def read_elem_partial(elem, *, items=None, indices=(slice(None), slice(None)), modifiers: frozenset[str] = frozenset()):
     """Read part of an element from an on disk store."""
-    return _REGISTRY.read_partial[get_schema(elem)](elem, items=items, indices=indices)
+    return _REGISTRY.get_partial_reader(get_spec(elem), frozenset(modifiers))(elem, items=items, indices=indices)
 
 
-def write_elem(f: h5py.Group, k: str, elem, *args, **kwargs):
+def write_elem(f: h5py.Group, k: str, elem, *args, modifiers=frozenset(), **kwargs):
     """Write an element to an on disk store."""
     t = type(elem)
-    if hasattr(elem, "dtype") and (t, elem.dtype.kind) in _REGISTRY.write:
-        _REGISTRY.write[(t, elem.dtype.kind)](f, k, elem, *args, **kwargs)
+    if hasattr(elem, "dtype") and ((t, elem.dtype.kind), modifiers) in _REGISTRY.write:
+        _REGISTRY.get_writer((t, elem.dtype.kind), modifiers)(f, k, elem, *args, **kwargs)
     else:
-        _REGISTRY.write[t](f, k, elem, *args, **kwargs)
+        _REGISTRY.get_writer(t, modifiers)(f, k, elem, *args, **kwargs)
 
 
 ################################
@@ -233,7 +270,7 @@ def _read_partial(group, *, items=None, indices=(slice(None), slice(None))):
     return result
 
 
-def read(pth):
+def read(pth, *, modifiers=MappingProxyType({})):
     with h5py.File(pth, "r") as f:
         results = {k: read_elem(v) for k, v in f.items()}
     return ad.AnnData(**results)
@@ -298,7 +335,8 @@ def read_array_partial(elem, *, items=None, indices=(slice(None, None))):
 
 # arrays of strings
 
-_REGISTRY.register_read(IOSpec("string-array", "0.2.0"))(read_basic)
+_REGISTRY.register_read(IOSpec("string-array", "0.2.0"))(read_array)
+_REGISTRY.register_read_partial(IOSpec("string-array", "0.2.0"))(read_array_partial)
 
 
 @_REGISTRY.register_write((views.ArrayView, "U"), IOSpec("string-array", "0.2.0"))
@@ -418,6 +456,23 @@ def read_dataframe(elem):
     return df
 
 
+# TODO: Figure out what indices is allowed to be at each element
+@_REGISTRY.register_read_partial(IOSpec("dataframe", "0.2.0"))
+def read_dataframe_partial(elem, *, items=None, indices=(slice(None, None), slice(None, None))):
+    if items is not None:
+        columns = [col for col in elem.attrs["column-order"] if col in items]
+    else:
+        columns = list(elem.attrs["column-order"])
+    idx_key = elem.attrs["_index"]
+    df = pd.DataFrame(
+        {k: read_elem_partial(elem[k], indices=indices[0]) for k in columns},
+        index=read_elem_partial(elem[idx_key], indices=indices[0]),
+        columns=list(columns),
+    )
+    if idx_key != "_index":
+        df.index.name = idx_key
+    return df
+
 # Backwards compat dataframe reading
 
 
@@ -475,6 +530,14 @@ def write_categorical(f, k, v, dataset_kwargs=MappingProxyType({})):
 def read_categorical(elem):
     return pd.Categorical.from_codes(
         codes=read_elem(elem["codes"]),
+        categories=read_elem(elem["categories"]),
+        ordered=elem.attrs["ordered"],
+    )
+
+@_REGISTRY.register_read_partial(IOSpec("categorical", "0.2.0"))
+def read_categorical(elem, *, items=None, indices=(slice(None),)):
+    return pd.Categorical.from_codes(
+        codes=read_elem_partial(elem["codes"], indices=indices),
         categories=read_elem(elem["categories"]),
         ordered=elem.attrs["ordered"],
     )

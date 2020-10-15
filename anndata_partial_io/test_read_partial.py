@@ -70,3 +70,34 @@ def test_read_write(tmpdir):
     from_disk = read(pth)
 
     assert_equal(orig, from_disk)
+
+
+def test_write_view(tmpdir):
+    from read_partial_registry import read, write
+    pth = tmpdir / "test.h5ad"
+
+    orig = gen_adata((10, 20))
+    orig.uns["scalars"] = {"str": "abced", "int": 1, "float": 1., "bool": True, "int32": np.int32(1)}
+
+    view = orig[:5, :]
+
+    write(view, pth)
+    test = read(pth)
+
+    actual = view.copy()
+    assert_equal(actual, test)
+
+
+def test_write_partial_read(tmpdir):
+    from read_partial_registry import read_partial, write
+    pth = tmpdir / "test.h5ad"
+
+    orig = gen_adata((10, 20))
+    orig.uns["scalars"] = {"str": "abced", "int": 1, "float": 1., "bool": True, "int32": np.int32(1)}
+    write(orig, pth)
+
+    subset = orig[:5, :].copy()
+
+    test = read_partial(pth, obs_idx=slice(None, 5))
+
+    assert_equal(subset, test)
