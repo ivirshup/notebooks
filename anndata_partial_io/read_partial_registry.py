@@ -48,10 +48,15 @@ class IORegistry(object):
         self.read_partial: typing.Mapping[IOSpec, Callable] = {}
         self.write: typing.Mapping[Union[Type, Tuple[Type, str]], Callable] = {}
 
-
-    def register_write(self, typ: Union[type, tuple[type, np.dtype]], spec, modifiers: frozenset(str) = frozenset()):
+    def register_write(
+        self,
+        typ: Union[type, tuple[type, str]],
+        spec,
+        modifiers: frozenset(str) = frozenset(),
+    ):
         spec = proc_spec(spec)
         modifiers = frozenset(modifiers)
+
         def _register(func):
             self.write[(typ, modifiers)] = write_spec(spec)(func)
             return func
@@ -65,6 +70,7 @@ class IORegistry(object):
     def register_read(self, spec, modifiers: frozenset[str] = frozenset()):
         spec = proc_spec(spec)
         modifiers = frozenset(modifiers)
+
         def _register(func):
             self.read[(spec, modifiers)] = func
             return func
@@ -78,6 +84,7 @@ class IORegistry(object):
     def register_read_partial(self, spec, modifiers: frozenset[str] = frozenset()):
         spec = proc_spec(spec)
         modifiers = frozenset(modifiers)
+
         def _register(func):
             self.read_partial[(spec, modifiers)] = func
             return func
@@ -143,16 +150,26 @@ def read_elem(elem, modifiers: frozenset(str) = frozenset()):
 
 
 # TODO: If all items would be read, just call normal read method
-def read_elem_partial(elem, *, items=None, indices=(slice(None), slice(None)), modifiers: frozenset[str] = frozenset()):
+def read_elem_partial(
+    elem,
+    *,
+    items=None,
+    indices=(slice(None), slice(None)),
+    modifiers: frozenset[str] = frozenset(),
+):
     """Read part of an element from an on disk store."""
-    return _REGISTRY.get_partial_reader(get_spec(elem), frozenset(modifiers))(elem, items=items, indices=indices)
+    return _REGISTRY.get_partial_reader(get_spec(elem), frozenset(modifiers))(
+        elem, items=items, indices=indices
+    )
 
 
 def write_elem(f: h5py.Group, k: str, elem, *args, modifiers=frozenset(), **kwargs):
     """Write an element to an on disk store."""
     t = type(elem)
     if hasattr(elem, "dtype") and ((t, elem.dtype.kind), modifiers) in _REGISTRY.write:
-        _REGISTRY.get_writer((t, elem.dtype.kind), modifiers)(f, k, elem, *args, **kwargs)
+        _REGISTRY.get_writer((t, elem.dtype.kind), modifiers)(
+            f, k, elem, *args, **kwargs
+        )
     else:
         _REGISTRY.get_writer(t, modifiers)(f, k, elem, *args, **kwargs)
 
@@ -304,6 +321,7 @@ def read_mapping(elem):
     return {k: read_elem(v) for k, v in elem.items()}
 
 
+@_REGISTRY.register_write(ad.compat._overloaded_dict.OverloadedDict, IOSpec("dict", "0.1.0"))
 @_REGISTRY.register_write(dict, IOSpec("dict", "0.1.0"))
 def write_mapping(f, k, v, dataset_kwargs=MappingProxyType({})):
     g = f.create_group(k)
@@ -335,8 +353,14 @@ def read_array_partial(elem, *, items=None, indices=(slice(None, None))):
 
 # arrays of strings
 
-_REGISTRY.register_read(IOSpec("string-array", "0.2.0"))(read_array)
-_REGISTRY.register_read_partial(IOSpec("string-array", "0.2.0"))(read_array_partial)
+@_REGISTRY.register_read(IOSpec("string-array", "0.2.0"))
+def read_string_array(d):
+    return read_array(d.asstr())
+
+
+@_REGISTRY.register_read_partial(IOSpec("string-array", "0.2.0"))
+def read_array_partial(d, items=None, indices=slice(None)):
+    return read_array_partial(d.asstr(), items=items, indices=indices)
 
 
 @_REGISTRY.register_write((views.ArrayView, "U"), IOSpec("string-array", "0.2.0"))
@@ -345,7 +369,8 @@ _REGISTRY.register_read_partial(IOSpec("string-array", "0.2.0"))(read_array_part
 @_REGISTRY.register_write((np.ndarray, "O"), IOSpec("string-array", "0.2.0"))
 def write_vlen_string_array(f, k, elem, dataset_kwargs=MappingProxyType({})):
     """Write methods which underlying library handles nativley."""
-    f.create_dataset(k, data=elem, dtype=h5py.special_dtype(vlen=str), **dataset_kwargs)
+    str_dtype = h5py.special_dtype(vlen=str)
+    f.create_dataset(k, data=elem.astype(str_dtype), dtype=str_dtype, **dataset_kwargs)
 
 
 ###############
@@ -367,6 +392,7 @@ def _to_hdf5_vlen_strings(value: np.ndarray) -> np.ndarray:
 _REGISTRY.register_read(IOSpec("rec-array", "0.2.0"))(read_basic)
 
 
+@_REGISTRY.register_write((np.ndarray, "V"), IOSpec("rec-array", "0.2.0"))
 @_REGISTRY.register_write(np.recarray, IOSpec("rec-array", "0.2.0"))
 def write_recarray(f, k, elem, dataset_kwargs=MappingProxyType({})):
     f.create_dataset(k, data=_to_hdf5_vlen_strings(elem), **dataset_kwargs)
@@ -458,7 +484,9 @@ def read_dataframe(elem):
 
 # TODO: Figure out what indices is allowed to be at each element
 @_REGISTRY.register_read_partial(IOSpec("dataframe", "0.2.0"))
-def read_dataframe_partial(elem, *, items=None, indices=(slice(None, None), slice(None, None))):
+def read_dataframe_partial(
+    elem, *, items=None, indices=(slice(None, None), slice(None, None))
+):
     if items is not None:
         columns = [col for col in elem.attrs["column-order"] if col in items]
     else:
@@ -472,6 +500,7 @@ def read_dataframe_partial(elem, *, items=None, indices=(slice(None, None), slic
     if idx_key != "_index":
         df.index.name = idx_key
     return df
+
 
 # Backwards compat dataframe reading
 
@@ -533,6 +562,7 @@ def read_categorical(elem):
         categories=read_elem(elem["categories"]),
         ordered=elem.attrs["ordered"],
     )
+
 
 @_REGISTRY.register_read_partial(IOSpec("categorical", "0.2.0"))
 def read_categorical(elem, *, items=None, indices=(slice(None),)):
